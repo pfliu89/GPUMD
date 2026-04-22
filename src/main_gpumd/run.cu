@@ -57,6 +57,7 @@ Run simulation according to the inputs in the run.in file.
 #include "measure/msd.cuh"
 #include "measure/orientorder.cuh"
 #include "measure/plumed.cuh"
+#include "measure/pdf.cuh"
 #include "measure/property.cuh"
 #include "measure/rdf.cuh"
 #include "measure/sdc.cuh"
@@ -478,6 +479,10 @@ void Run::parse_one_keyword(std::vector<std::string>& tokens)
   } else if (strcmp(param[0], "compute_rdf") == 0) {
     std::unique_ptr<Property> property;
     property.reset(new RDF(param, num_param, box, atom.cpu_type_size, number_of_steps));
+    measure.properties.emplace_back(std::move(property));
+  } else if (strcmp(param[0], "compute_pdf") == 0) {
+    std::unique_ptr<Property> property;
+    property.reset(new PDF(param, num_param, box, atom.cpu_type_size, number_of_steps));
     measure.properties.emplace_back(std::move(property));
   } else if (strcmp(param[0], "compute_adf") == 0) {
     std::unique_ptr<Property> property;
