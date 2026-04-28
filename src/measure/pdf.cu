@@ -237,11 +237,11 @@ void PDF::preprocess(
   average_neutron_scattering_length_square_ = 0.0;
 
   if (type_weight_mode_ == 0) {
-    printf("    type_weight = 0: output unweighted g(r), R(r), G(r), D(r), and T(r).\n");
+    printf("    type_weight = 0: output unweighted PDF.\n");
     return;
   }
 
-  printf("    type_weight = 1: output neutron-weighted total g(r), R(r), G(r), D(r), and T(r).\n");
+  printf("    type_weight = 1: output neutron-weighted PDF.\n");
   for (int a = 0; a < pdf_para.num_types; ++a) {
     neutron_scattering_length_[a] = get_neutron_scattering_length(type_symbols_[a]);
     const double concentration = static_cast<double>(pdf_para.num_atoms[a]) / atom.number_of_atoms;
