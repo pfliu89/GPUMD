@@ -16,6 +16,7 @@
 #pragma once
 #include "property.cuh"
 #include "utilities/gpu_vector.cuh"
+#include <string>
 #include <vector>
 
 class Group;
@@ -76,22 +77,29 @@ public:
     const int num_param,
     Box& box,
     const std::vector<int>& cpu_type_size,
-    const int number_of_steps);
+    const int number_of_steps,
+    const int type_weight);
 
   PDF(
     const char** param,
     const int num_param,
     Box& box,
     const std::vector<int>& cpu_type_size,
-    const int number_of_steps);
+    const int number_of_steps,
+    const int type_weight);
 
 private:
   int sampling_interval_ = 100;
+  int type_weight_mode_ = 0;
+  double average_neutron_scattering_length_ = 0.0;
+  double average_neutron_scattering_length_square_ = 0.0;
   GPU_Vector<double> pdf_g_;
   GPU_Vector<int> cell_count;
   GPU_Vector<int> cell_count_sum;
   GPU_Vector<int> cell_contents;
   PDF_Para pdf_para;
+  std::vector<double> neutron_scattering_length_;
+  std::vector<std::string> type_symbols_;
 
   void find_rdf(Box& box, const GPU_Vector<int>& type, const GPU_Vector<double>& position);
 };
