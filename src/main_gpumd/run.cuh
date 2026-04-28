@@ -57,6 +57,7 @@ private:
   int number_of_types; // number of atom types
   int has_velocity_in_xyz = 0;
   int number_of_steps;        // number of steps in a specific run
+  int type_weight = 0;
   double global_time = 0.0;   // run time of entire simulation (fs)
   double initial_temperature; // initial temperature for velocity
   double time_step = 1.0 / TIME_UNIT_CONVERSION;

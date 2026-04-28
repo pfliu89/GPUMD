@@ -149,7 +149,7 @@ __global__ void gpu_find_rdf_ON1(
                 double r_low = (w * para.dr) * (w * para.dr);
                 double r_up = ((w + 1) * para.dr) * ((w + 1) * para.dr);
                 double r_mid_sqaure = ((w + 0.5) * para.dr) * ((w + 0.5) * para.dr);
-                double dV = r_mid_sqaure * 4 * PDF_PI * para.dr;
+                double dV = r_mid_sqaure * 4 * 3.14159265358979323846 * para.dr;
                 if (d2 > r_low && d2 <= r_up) {
                   atomicAdd(&rdf_[w * para.num_PDFs + 0], 1 / (N * para.density_global * dV));
                   int count = 1;
@@ -297,11 +297,11 @@ void PDF::postprocess(
   std::vector<double> rdf_(pdf_para.num_PDFs * pdf_para.num_bins, 0);
   pdf_g_.copy_to_host(rdf_.data());
 
-  FILE* fid_g = my_fopen("g.out", "a");
-  FILE* fid_R = my_fopen("R.out", "a");
-  FILE* fid_G = my_fopen("G.out", "a");
-  FILE* fid_D = my_fopen("D_pdf.out", "a");
-  FILE* fid_T = my_fopen("T.out", "a");
+  FILE* fid_g = my_fopen("PDF_gr.out", "a");
+  FILE* fid_R = my_fopen("PDF_Rr.out", "a");
+  FILE* fid_G = my_fopen("PDF_Gr.out", "a");
+  FILE* fid_D = my_fopen("PDF_Dr.out", "a");
+  FILE* fid_T = my_fopen("PDF_Tr.out", "a");
 
   write_pdf_header(fid_g, type_symbols_);
   write_pdf_header(fid_R, type_symbols_);

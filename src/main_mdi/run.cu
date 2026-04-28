@@ -726,13 +726,6 @@ void Run::parse_one_keyword(std::vector<std::string>& tokens)
     measure.properties.emplace_back(std::move(property));
   } else if (strcmp(param[0], "compute_pdf") == 0) {
     std::unique_ptr<Property> property;
-    if (num_param != 5) {
-      PRINT_INPUT_ERROR("compute_pdf should have 4 parameters.\n");
-    }
-    int type_weight = 0;
-    if (!is_valid_int(param[4], &type_weight)) {
-      PRINT_INPUT_ERROR("type_weight should be an integer.\n");
-    }
     property.reset(new PDF(param, num_param, box, atom.cpu_type_size, number_of_steps, type_weight));
     measure.properties.emplace_back(std::move(property));
   } else if (strcmp(param[0], "compute_adf") == 0) {
