@@ -22,17 +22,17 @@
 class Group;
 class Atom;
 
-class PDF : public Property
+class SQ : public Property
 {
 
 public:
 
-  struct PDF_Para {
+  struct SQ_Para {
     int num_types;           // number of atom types in model.xyz
-    int num_PDFs;            // 1 + (num_type * (num_types + 1)) / 2
-    int num_bins;            // number of bins in the PDFs
+    int num_SQs;             // 1 + (num_types * (num_types + 1)) / 2
+    int num_bins;            // number of bins in the g(r)
     double volume;           // volume could change during NPT simulations
-    double rc;               // cutoff for PDF calculation
+    double rc;               // cutoff for g(r) calculation
     double rc_square;        // rc * rc
     double dr;               // rc / num_bins
     int type_index[89];      // map of atom type from model.xyz to nep.txt
@@ -79,7 +79,7 @@ public:
     const std::vector<int>& cpu_type_size,
     const int number_of_steps);
 
-  PDF(
+  SQ(
     const char** param,
     const int num_param,
     Box& box,
@@ -88,14 +88,18 @@ public:
 
 private:
   int sampling_interval_ = 100;
-  int type_weight_mode_ = 0;
+  int weight_mode_ = 0;
+  double q_cutoff_ = 0.0;
+  int q_num_bins_ = 0;
+  double dq_ = 0.0;
   double average_neutron_scattering_length_ = 0.0;
   double average_neutron_scattering_length_square_ = 0.0;
-  GPU_Vector<double> pdf_g_;
+  double average_neutron_scattering_length_squared_mean_ = 0.0;
+  GPU_Vector<double> rdf_g_;
   GPU_Vector<int> cell_count;
   GPU_Vector<int> cell_count_sum;
   GPU_Vector<int> cell_contents;
-  PDF_Para pdf_para;
+  SQ_Para sq_para;
   std::vector<double> neutron_scattering_length_;
   std::vector<std::string> type_symbols_;
 

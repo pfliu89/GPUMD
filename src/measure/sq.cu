@@ -14,9 +14,7 @@
 */
 
 /*-----------------------------------------------------------------------------------------------100
-Calculate the reduced pair distribution function (PDF)
-Initial implementation: Yong Wang
-Refactored by: Zheyong Fan
+Calculate the total scattering function from g(r)
 --------------------------------------------------------------------------------------------------*/
 
 #include "force/neighbor.cuh"
@@ -25,7 +23,7 @@ Refactored by: Zheyong Fan
 #include "model/box.cuh"
 #include "model/group.cuh"
 #include "parse_utilities.cuh"
-#include "pdf.cuh"
+#include "sq.cuh"
 #include "utilities/common.cuh"
 #include "utilities/error.cuh"
 #include "utilities/gpu_macro.cuh"
@@ -36,7 +34,7 @@ Refactored by: Zheyong Fan
 
 namespace
 {
-const double PDF_PI = 3.14159265358979323846;
+const double SQ_PI = 3.14159265358979323846;
 
 const std::map<std::string, double> NEUTRON_SCATTERING_LENGTH_TABLE{
   {"H", -3.7409}, {"He", 3.0985},  {"Li", -1.9300}, {"Be", 7.7900},  {"B", 5.3000},
@@ -71,7 +69,7 @@ double get_neutron_scattering_length(const std::string& symbol)
   return it->second;
 }
 
-void write_pdf_header(FILE* fid, const std::vector<std::string>& type_symbols)
+void write_gr_header(FILE* fid, const std::vector<std::string>& type_symbols)
 {
   fprintf(fid, "#radius total");
   for (int a = 0; a < type_symbols.size(); ++a) {
@@ -82,9 +80,14 @@ void write_pdf_header(FILE* fid, const std::vector<std::string>& type_symbols)
   fprintf(fid, "\n");
 }
 
+void write_q_header(FILE* fid)
+{
+  fprintf(fid, "#Q total\n");
+}
+
 __global__ void gpu_find_rdf_ON1(
   const int N,
-  const PDF::PDF_Para para,
+  const SQ::SQ_Para para,
   const Box box,
   const int* __restrict__ cell_counts,
   const int* __restrict__ cell_count_sum,
@@ -145,18 +148,20 @@ __global__ void gpu_find_rdf_ON1(
               if (d2 > para.rc_square) {
                 continue;
               }
-              for (int w = 0; w < para.num_bins; w++) {
-                double r_low = (w * para.dr) * (w * para.dr);
-                double r_up = ((w + 1) * para.dr) * ((w + 1) * para.dr);
-                double r_mid_sqaure = ((w + 0.5) * para.dr) * ((w + 0.5) * para.dr);
-                double dV = r_mid_sqaure * 4 * 3.14159265358979323846 * para.dr;
+              for (int w = 0; w < para.num_bins; ++w) {
+                const double r_low = (w * para.dr) * (w * para.dr);
+                const double r_up = ((w + 1) * para.dr) * ((w + 1) * para.dr);
+                const double r_mid_square = ((w + 0.5) * para.dr) * ((w + 0.5) * para.dr);
+                const double dV = r_mid_square * 4.0 * 3.14159265358979323846 * para.dr;
                 if (d2 > r_low && d2 <= r_up) {
-                  atomicAdd(&rdf_[w * para.num_PDFs + 0], 1 / (N * para.density_global * dV));
+                  atomicAdd(&rdf_[w * para.num_SQs + 0], 1 / (N * para.density_global * dV));
                   int count = 1;
                   for (int a = 0; a < para.num_types; ++a) {
                     for (int b = a; b < para.num_types; ++b) {
-                      if(type[n1] == para.type_index[a] && type[n2] == para.type_index[b]) {
-                        atomicAdd(&rdf_[w * para.num_PDFs + count], 1 / (para.num_atoms[a] * para.density_type[b] * dV));
+                      if (type[n1] == para.type_index[a] && type[n2] == para.type_index[b]) {
+                        atomicAdd(
+                          &rdf_[w * para.num_SQs + count],
+                          1 / (para.num_atoms[a] * para.density_type[b] * dV));
                       }
                       ++count;
                     }
@@ -172,11 +177,11 @@ __global__ void gpu_find_rdf_ON1(
 }
 } // namespace
 
-void PDF::find_rdf(Box& box, const GPU_Vector<int>& type, const GPU_Vector<double>& position)
+void SQ::find_rdf(Box& box, const GPU_Vector<int>& type, const GPU_Vector<double>& position)
 {
   const int N = type.size();
-  const double rc_cell_list = 0.5 * pdf_para.rc;
-  const double rc_inv_cell_list = 2.0 / pdf_para.rc;
+  const double rc_cell_list = 0.5 * sq_para.rc;
+  const double rc_inv_cell_list = 2.0 / sq_para.rc;
   int num_bins[3];
   box.get_num_bins(rc_cell_list, num_bins);
   find_cell_list(
@@ -190,7 +195,7 @@ void PDF::find_rdf(Box& box, const GPU_Vector<int>& type, const GPU_Vector<doubl
 
   gpu_find_rdf_ON1<<<(N - 1) / 256 + 1, 256>>>(
     N,
-    pdf_para,
+    sq_para,
     box,
     cell_count.data(),
     cell_count_sum.data(),
@@ -203,11 +208,11 @@ void PDF::find_rdf(Box& box, const GPU_Vector<int>& type, const GPU_Vector<doubl
     position.data() + N,
     position.data() + N * 2,
     type.data(),
-    pdf_g_.data());
+    rdf_g_.data());
   GPU_CHECK_KERNEL
 }
 
-void PDF::preprocess(
+void SQ::preprocess(
   const int number_of_steps,
   const double time_step,
   Integrate& integrate,
@@ -216,14 +221,14 @@ void PDF::preprocess(
   Box& box,
   Force& force)
 {
-  pdf_g_.resize(pdf_para.num_PDFs * pdf_para.num_bins, 0);
+  rdf_g_.resize(sq_para.num_SQs * sq_para.num_bins, 0);
   cell_count.resize(atom.number_of_atoms);
   cell_count_sum.resize(atom.number_of_atoms);
   cell_contents.resize(atom.number_of_atoms);
 
-  type_symbols_.resize(pdf_para.num_types);
-  for (int a = 0; a < pdf_para.num_types; ++a) {
-    const int type_idx = pdf_para.type_index[a];
+  type_symbols_.resize(sq_para.num_types);
+  for (int a = 0; a < sq_para.num_types; ++a) {
+    const int type_idx = sq_para.type_index[a];
     for (int n = 0; n < atom.number_of_atoms; ++n) {
       if (atom.cpu_type[n] == type_idx) {
         type_symbols_[a] = atom.cpu_atom_symbol[n];
@@ -232,23 +237,26 @@ void PDF::preprocess(
     }
   }
 
-  neutron_scattering_length_.assign(pdf_para.num_types, 0.0);
+  neutron_scattering_length_.assign(sq_para.num_types, 0.0);
   average_neutron_scattering_length_ = 0.0;
   average_neutron_scattering_length_square_ = 0.0;
+  average_neutron_scattering_length_squared_mean_ = 0.0;
 
-  if (type_weight_mode_ == 0) {
-    printf("    type_weight = 0: output unweighted PDF.\n");
+  if (weight_mode_ == 0) {
+    printf("    weight = 0: output unweighted total scattering.\n");
     return;
   }
 
-  printf("    type_weight = 1: output neutron-weighted PDF.\n");
-  for (int a = 0; a < pdf_para.num_types; ++a) {
+  printf("    weight = 1: output neutron-weighted total scattering.\n");
+  for (int a = 0; a < sq_para.num_types; ++a) {
     neutron_scattering_length_[a] = get_neutron_scattering_length(type_symbols_[a]);
-    const double concentration = static_cast<double>(pdf_para.num_atoms[a]) / atom.number_of_atoms;
+    const double concentration = static_cast<double>(sq_para.num_atoms[a]) / atom.number_of_atoms;
     average_neutron_scattering_length_ += concentration * neutron_scattering_length_[a];
+    average_neutron_scattering_length_squared_mean_ +=
+      concentration * neutron_scattering_length_[a] * neutron_scattering_length_[a];
     printf(
       "        Type %d (%s) has neutron coherent scattering length %g fm.\n",
-      pdf_para.type_index[a],
+      sq_para.type_index[a],
       type_symbols_[a].c_str(),
       neutron_scattering_length_[a]);
   }
@@ -260,7 +268,7 @@ void PDF::preprocess(
   }
 }
 
-void PDF::process(
+void SQ::process(
   const int number_of_steps,
   int step,
   const int fixed_group,
@@ -278,15 +286,15 @@ void PDF::process(
     return;
   }
 
-  pdf_para.volume = box.get_volume();
-  pdf_para.density_global = atom.number_of_atoms / pdf_para.volume;
-  for (int t = 0; t < pdf_para.num_types; ++ t) {
-    pdf_para.density_type[t] = pdf_para.num_atoms[t] / pdf_para.volume;
+  sq_para.volume = box.get_volume();
+  sq_para.density_global = atom.number_of_atoms / sq_para.volume;
+  for (int t = 0; t < sq_para.num_types; ++t) {
+    sq_para.density_type[t] = sq_para.num_atoms[t] / sq_para.volume;
   }
   find_rdf(box, atom.type, integrate.type >= 31 ? atom.position_beads[0] : atom.position_per_atom);
 }
 
-void PDF::postprocess(
+void SQ::postprocess(
   Atom& atom,
   Box& box,
   Integrate& integrate,
@@ -294,100 +302,90 @@ void PDF::postprocess(
   const double time_step,
   const double temperature)
 {
-  std::vector<double> rdf_(pdf_para.num_PDFs * pdf_para.num_bins, 0);
-  pdf_g_.copy_to_host(rdf_.data());
+  std::vector<double> rdf_(sq_para.num_SQs * sq_para.num_bins, 0.0);
+  std::vector<double> total_gr(sq_para.num_bins, 0.0);
+  rdf_g_.copy_to_host(rdf_.data());
 
-  FILE* fid_g = my_fopen("PDF_gr.out", "a");
-  FILE* fid_R = my_fopen("PDF_Rr.out", "a");
-  FILE* fid_G = my_fopen("PDF_Gx.out", "a");
-  FILE* fid_D = my_fopen("PDF_Dr.out", "a");
-  FILE* fid_T = my_fopen("PDF_Tr.out", "a");
+  FILE* fid_gr = my_fopen("SQ_gr.out", "a");
+  FILE* fid_sq = my_fopen("SQ_SQ.out", "a");
+  FILE* fid_fq = my_fopen("SQ_FQ.out", "a");
+  FILE* fid_iq = my_fopen("SQ_IQ.out", "a");
 
-  write_pdf_header(fid_g, type_symbols_);
-  write_pdf_header(fid_R, type_symbols_);
-  write_pdf_header(fid_G, type_symbols_);
-  write_pdf_header(fid_D, type_symbols_);
-  write_pdf_header(fid_T, type_symbols_);
+  write_gr_header(fid_gr, type_symbols_);
+  write_q_header(fid_sq);
+  write_q_header(fid_fq);
+  write_q_header(fid_iq);
 
   const int num_repeats = number_of_steps / sampling_interval_;
-  for (int bin = 0; bin < pdf_para.num_bins; bin++) {
-    const double r = bin * pdf_para.dr + pdf_para.dr / 2;
-    const double g_total_unweighted = rdf_[bin * pdf_para.num_PDFs + 0] / num_repeats;
+  for (int bin = 0; bin < sq_para.num_bins; ++bin) {
+    const double r = bin * sq_para.dr + sq_para.dr / 2.0;
+    const double g_total_unweighted = rdf_[bin * sq_para.num_SQs + 0] / num_repeats;
     double g_total = g_total_unweighted;
-    if (type_weight_mode_ == 1) {
+    if (weight_mode_ == 1) {
       g_total = 0.0;
       int count = 1;
-      for (int a = 0; a < pdf_para.num_types; ++a) {
-        const double concentration_a = static_cast<double>(pdf_para.num_atoms[a]) / atom.number_of_atoms;
-        for (int b = a; b < pdf_para.num_types; ++b) {
-          const double concentration_b = static_cast<double>(pdf_para.num_atoms[b]) / atom.number_of_atoms;
+      for (int a = 0; a < sq_para.num_types; ++a) {
+        const double concentration_a = static_cast<double>(sq_para.num_atoms[a]) / atom.number_of_atoms;
+        for (int b = a; b < sq_para.num_types; ++b) {
+          const double concentration_b =
+            static_cast<double>(sq_para.num_atoms[b]) / atom.number_of_atoms;
           const double pair_multiplicity = (a == b) ? 1.0 : 2.0;
           const double pair_weight =
             pair_multiplicity * concentration_a * concentration_b *
             neutron_scattering_length_[a] * neutron_scattering_length_[b] /
             average_neutron_scattering_length_square_;
-          const double g_ab = rdf_[bin * pdf_para.num_PDFs + count] / num_repeats;
+          const double g_ab = rdf_[bin * sq_para.num_SQs + count] / num_repeats;
           g_total += pair_weight * g_ab;
           ++count;
         }
       }
     }
+    total_gr[bin] = g_total;
 
-    const double R_total = 4.0 * PDF_PI * r * r * pdf_para.density_global * g_total;
-    const double G_total = 4.0 * PDF_PI * pdf_para.density_global * r * (g_total - 1.0);
-    const double D_total =
-      (type_weight_mode_ == 1) ? average_neutron_scattering_length_square_ * G_total : G_total;
-    const double T_total = (type_weight_mode_ == 1)
-                             ? average_neutron_scattering_length_square_ * 4.0 * PDF_PI *
-                                 pdf_para.density_global * r * g_total
-                             : 4.0 * PDF_PI * pdf_para.density_global * r * g_total;
-
-    fprintf(fid_g, "%.5f %.5f", r, g_total);
-    fprintf(fid_R, "%.5f %.5f", r, R_total);
-    fprintf(fid_G, "%.5f %.5f", r, G_total);
-    fprintf(fid_D, "%.5f %.5f", r, D_total);
-    fprintf(fid_T, "%.5f %.5f", r, T_total);
-
+    fprintf(fid_gr, "%.5f %.5f", r, g_total);
     int count = 1;
-    for (int a = 0; a < pdf_para.num_types; a++) {
-      for (int b = a; b < pdf_para.num_types; b++) {
-        const double g_ab = rdf_[bin * pdf_para.num_PDFs + count] / num_repeats;
-        const double R_ab = 4.0 * PDF_PI * r * r * pdf_para.density_type[b] * g_ab;
-        const double G_ab = 4.0 * PDF_PI * pdf_para.density_type[b] * r * (g_ab - 1.0);
-        const double pair_scattering_product =
-          (type_weight_mode_ == 1) ? neutron_scattering_length_[a] * neutron_scattering_length_[b]
-                                   : 1.0;
-        const double D_ab = pair_scattering_product * G_ab;
-        const double T_ab =
-          pair_scattering_product * 4.0 * PDF_PI * pdf_para.density_type[b] * r * g_ab;
-        fprintf(fid_g, " %.5f", g_ab);
-        fprintf(fid_R, " %.5f", R_ab);
-        fprintf(fid_G, " %.5f", G_ab);
-        fprintf(fid_D, " %.5f", D_ab);
-        fprintf(fid_T, " %.5f", T_ab);
+    for (int a = 0; a < sq_para.num_types; ++a) {
+      for (int b = a; b < sq_para.num_types; ++b) {
+        const double g_ab = rdf_[bin * sq_para.num_SQs + count] / num_repeats;
+        fprintf(fid_gr, " %.5f", g_ab);
         ++count;
       }
     }
-    fprintf(fid_g, "\n");
-    fprintf(fid_R, "\n");
-    fprintf(fid_G, "\n");
-    fprintf(fid_D, "\n");
-    fprintf(fid_T, "\n");
+    fprintf(fid_gr, "\n");
   }
 
-  fflush(fid_g);
-  fflush(fid_R);
-  fflush(fid_G);
-  fflush(fid_D);
-  fflush(fid_T);
-  fclose(fid_g);
-  fclose(fid_R);
-  fclose(fid_G);
-  fclose(fid_D);
-  fclose(fid_T);
+  const double density = sq_para.density_global;
+  for (int q_bin = 0; q_bin < q_num_bins_; ++q_bin) {
+    const double q = q_bin * dq_ + dq_ / 2.0;
+    double sq_total = 1.0;
+    for (int r_bin = 0; r_bin < sq_para.num_bins; ++r_bin) {
+      const double r = r_bin * sq_para.dr + sq_para.dr / 2.0;
+      const double qr = q * r;
+      const double sinc = (fabs(qr) < 1.0e-12) ? 1.0 : sin(qr) / qr;
+      sq_total += 4.0 * SQ_PI * density * r * r * (total_gr[r_bin] - 1.0) * sinc * sq_para.dr;
+    }
+    const double fq_total = q * (sq_total - 1.0);
+    const double iq_total =
+      (weight_mode_ == 1)
+        ? average_neutron_scattering_length_squared_mean_ +
+            average_neutron_scattering_length_square_ * (sq_total - 1.0)
+        : sq_total;
+    fprintf(fid_sq, "%.5f %.5f\n", q, sq_total);
+    fprintf(fid_fq, "%.5f %.5f\n", q, fq_total);
+    fprintf(fid_iq, "%.5f %.5f\n", q, iq_total);
+  }
+
+  fflush(fid_gr);
+  fflush(fid_sq);
+  fflush(fid_fq);
+  fflush(fid_iq);
+  fclose(fid_gr);
+  fclose(fid_sq);
+  fclose(fid_fq);
+  fclose(fid_iq);
 }
 
-PDF::PDF(
+SQ::SQ(
   const char** param,
   const int num_param,
   Box& box,
@@ -395,52 +393,51 @@ PDF::PDF(
   const int number_of_steps)
 {
   parse(param, num_param, box, cpu_type_size, number_of_steps);
-  property_name = "compute_pdf";
+  property_name = "compute_sq";
 }
 
-void PDF::parse(
+void SQ::parse(
   const char** param,
   const int num_param,
   Box& box,
   const std::vector<int>& cpu_type_size,
   const int number_of_steps)
 {
-  printf("Compute reduced pair distribution function (PDF).\n");
+  printf("Compute total scattering function (SQ).\n");
 
-  if (num_param != 5) {
-    PRINT_INPUT_ERROR("compute_pdf should have 4 parameters.\n");
+  if (num_param != 7) {
+    PRINT_INPUT_ERROR("compute_sq should have 6 parameters.\n");
   }
 
-  if (!is_valid_real(param[1], &pdf_para.rc)) {
+  if (!is_valid_real(param[1], &sq_para.rc)) {
     PRINT_INPUT_ERROR("radial cutoff should be a number.\n");
   }
-  if (pdf_para.rc <= 0) {
+  if (sq_para.rc <= 0) {
     PRINT_INPUT_ERROR("radial cutoff should be positive.\n");
   }
   double thickness_half[3] = {
     box.get_volume() / box.get_area(0) / 2.5,
     box.get_volume() / box.get_area(1) / 2.5,
     box.get_volume() / box.get_area(2) / 2.5};
-  if (pdf_para.rc > thickness_half[0] || pdf_para.rc > thickness_half[1] || pdf_para.rc > thickness_half[2]) {
+  if (sq_para.rc > thickness_half[0] || sq_para.rc > thickness_half[1] ||
+      sq_para.rc > thickness_half[2]) {
     std::string message =
-      "The box has a thickness < 2.5 PDF radial cutoffs in a periodic direction.\n"
+      "The box has a thickness < 2.5 SQ radial cutoffs in a periodic direction.\n"
       "                Please increase the periodic direction(s).\n";
     PRINT_INPUT_ERROR(message.c_str());
   }
-  printf("    radial cutoff %g.\n", pdf_para.rc);
+  printf("    radial cutoff %g.\n", sq_para.rc);
 
-  if (!is_valid_int(param[2], &pdf_para.num_bins)) {
+  if (!is_valid_int(param[2], &sq_para.num_bins)) {
     PRINT_INPUT_ERROR("number of bins should be an integer.\n");
   }
-  if (pdf_para.num_bins <= 20) {
+  if (sq_para.num_bins <= 20) {
     PRINT_INPUT_ERROR("A larger nbins is recommended.\n");
   }
-
-  if (pdf_para.num_bins > 500) {
+  if (sq_para.num_bins > 500) {
     PRINT_INPUT_ERROR("A smaller nbins is recommended.\n");
   }
-
-  printf("    radial cutoff will be divided into %d bins.\n", pdf_para.num_bins);
+  printf("    radial cutoff will be divided into %d bins.\n", sq_para.num_bins);
 
   if (!is_valid_int(param[3], &sampling_interval_)) {
     PRINT_INPUT_ERROR("interval step per sample should be an integer.\n");
@@ -448,31 +445,47 @@ void PDF::parse(
   if (sampling_interval_ <= 0) {
     PRINT_INPUT_ERROR("interval step per sample should be positive.\n");
   }
-  printf("    PDF sample interval is %d step.\n", sampling_interval_);
+  printf("    SQ sample interval is %d step.\n", sampling_interval_);
 
-  if (!is_valid_int(param[4], &type_weight_mode_)) {
-    PRINT_INPUT_ERROR("type_weight should be an integer.\n");
+  if (!is_valid_real(param[4], &q_cutoff_)) {
+    PRINT_INPUT_ERROR("Q cutoff should be a number.\n");
   }
-  if (type_weight_mode_ != 0 && type_weight_mode_ != 1) {
-    PRINT_INPUT_ERROR("type_weight should be 0 or 1.\n");
+  if (q_cutoff_ <= 0.0) {
+    PRINT_INPUT_ERROR("Q cutoff should be positive.\n");
+  }
+  printf("    Q cutoff %g 1/A.\n", q_cutoff_);
+
+  if (!is_valid_int(param[5], &q_num_bins_)) {
+    PRINT_INPUT_ERROR("number of Q bins should be an integer.\n");
+  }
+  if (q_num_bins_ <= 0) {
+    PRINT_INPUT_ERROR("number of Q bins should be positive.\n");
+  }
+  printf("    Q cutoff will be divided into %d bins.\n", q_num_bins_);
+
+  if (!is_valid_int(param[6], &weight_mode_)) {
+    PRINT_INPUT_ERROR("weight should be an integer.\n");
+  }
+  if (weight_mode_ != 0 && weight_mode_ != 1) {
+    PRINT_INPUT_ERROR("weight should be 0 or 1.\n");
   }
 
-  pdf_para.num_types = 0;
+  sq_para.num_types = 0;
   for (int t = 0; t < cpu_type_size.size(); ++t) {
     if (cpu_type_size[t] != 0) {
-      pdf_para.type_index[pdf_para.num_types] = t;
-      pdf_para.num_atoms[pdf_para.num_types] = cpu_type_size[t];
-      pdf_para.num_types++;
+      sq_para.type_index[sq_para.num_types] = t;
+      sq_para.num_atoms[sq_para.num_types] = cpu_type_size[t];
+      sq_para.num_types++;
     }
   }
-  pdf_para.num_PDFs = 1 + (pdf_para.num_types * (pdf_para.num_types + 1)) / 2;
-  pdf_para.rc_square = pdf_para.rc * pdf_para.rc;
-  pdf_para.dr = pdf_para.rc / pdf_para.num_bins;
+  sq_para.num_SQs = 1 + (sq_para.num_types * (sq_para.num_types + 1)) / 2;
+  sq_para.rc_square = sq_para.rc * sq_para.rc;
+  sq_para.dr = sq_para.rc / sq_para.num_bins;
+  dq_ = q_cutoff_ / q_num_bins_;
 
-  printf("    There are %d atom types in model.xyz.\n", pdf_para.num_types);
-  for (int a = 0; a < pdf_para.num_types; ++a) {
-    printf("        Type %d has %d atoms.\n", pdf_para.type_index[a], pdf_para.num_atoms[a]);
+  printf("    There are %d atom types in model.xyz.\n", sq_para.num_types);
+  for (int a = 0; a < sq_para.num_types; ++a) {
+    printf("        Type %d has %d atoms.\n", sq_para.type_index[a], sq_para.num_atoms[a]);
   }
-  printf("    Will calculate one total PDF and %d partial PDFs.\n", pdf_para.num_PDFs - 1);
+  printf("    Will calculate one total g(r) and %d partial g(r)s.\n", sq_para.num_SQs - 1);
 }
-

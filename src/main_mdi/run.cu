@@ -59,6 +59,7 @@ Run simulation according to the inputs in the run.in file.
 #include "measure/pdf.cuh"
 #include "measure/property.cuh"
 #include "measure/rdf.cuh"
+#include "measure/sq.cuh"
 #include "measure/sdc.cuh"
 #include "measure/shc.cuh"
 #include "measure/viscosity.cuh"
@@ -726,7 +727,11 @@ void Run::parse_one_keyword(std::vector<std::string>& tokens)
     measure.properties.emplace_back(std::move(property));
   } else if (strcmp(param[0], "compute_pdf") == 0) {
     std::unique_ptr<Property> property;
-    property.reset(new PDF(param, num_param, box, atom.cpu_type_size, number_of_steps, type_weight));
+    property.reset(new PDF(param, num_param, box, atom.cpu_type_size, number_of_steps));
+    measure.properties.emplace_back(std::move(property));
+  } else if (strcmp(param[0], "compute_sq") == 0) {
+    std::unique_ptr<Property> property;
+    property.reset(new SQ(param, num_param, box, atom.cpu_type_size, number_of_steps));
     measure.properties.emplace_back(std::move(property));
   } else if (strcmp(param[0], "compute_adf") == 0) {
     std::unique_ptr<Property> property;
